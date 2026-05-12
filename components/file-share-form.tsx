@@ -84,6 +84,48 @@ function maxAmountForUnit(unit: DurationUnit) {
   return Math.max(1, Math.floor(maxExpiresMs / (unitConfig?.ms ?? durationUnits[2].ms)));
 }
 
+async function writeClipboardText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to the legacy path for non-HTTPS deployments.
+    }
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.setAttribute("readonly", "");
+  textArea.style.position = "fixed";
+  textArea.style.top = "-9999px";
+  textArea.style.left = "-9999px";
+  textArea.style.opacity = "0";
+  textArea.style.pointerEvents = "none";
+
+  document.body.appendChild(textArea);
+
+  const selection = document.getSelection();
+  const selectedRange =
+    selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+  textArea.select();
+  textArea.setSelectionRange(0, textArea.value.length);
+
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("Copy command was rejected");
+    }
+  } finally {
+    document.body.removeChild(textArea);
+
+    if (selection && selectedRange) {
+      selection.removeAllRanges();
+      selection.addRange(selectedRange);
+    }
+  }
+}
+
 export function FileShareForm() {
   const [file, setFile] = React.useState<File | null>(null);
   const [durationAmount, setDurationAmount] = React.useState("1");
@@ -136,8 +178,12 @@ export function FileShareForm() {
   async function copyUrl() {
     if (!result?.url) return;
 
-    await navigator.clipboard.writeText(result.url);
-    toast.success("链接已复制");
+    try {
+      await writeClipboardText(result.url);
+      toast.success("链接已复制");
+    } catch {
+      toast.error("复制失败，请手动复制链接");
+    }
   }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
