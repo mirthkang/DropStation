@@ -2,7 +2,7 @@
 
 import { format } from "date-fns";
 import { zhCN } from "date-fns/locale";
-import { CalendarIcon, Check, Copy, FileUp, Loader2, UploadCloud } from "lucide-react";
+import { CalendarIcon, Check, Copy, FileUp, Loader2, RefreshCw, UploadCloud } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -30,6 +30,7 @@ type UploadResult = {
   url: string;
   duplicate: boolean;
   file: {
+    token: string;
     name: string;
     size: number;
     expiresAt: number;
@@ -135,6 +136,7 @@ export function FileShareForm() {
   );
   const [maxDate] = React.useState(() => new Date(Date.now() + maxExpiresMs));
   const [isUploading, setIsUploading] = React.useState(false);
+  const [isRegenerating, setIsRegenerating] = React.useState(false);
   const [result, setResult] = React.useState<UploadResult | null>(null);
 
   const today = React.useMemo(() => {
@@ -159,7 +161,9 @@ export function FileShareForm() {
       }
 
       setExpiresAtDate(durationToExpiresAt(clampedAmount, nextUnit));
-      setResult(null);
+      if (!result?.duplicate) {
+        setResult(null);
+      }
       return;
     }
 
@@ -172,7 +176,9 @@ export function FileShareForm() {
     const merged = new Date(nextDate);
     merged.setHours(23, 59, 0, 0);
     setExpiresAtDate(merged.getTime() > maxDate.getTime() ? roundToMinute(maxDate) : merged);
-    setResult(null);
+    if (!result?.duplicate) {
+      setResult(null);
+    }
   }
 
   async function copyUrl() {
@@ -183,6 +189,44 @@ export function FileShareForm() {
       toast.success("链接已复制");
     } catch {
       toast.error("复制失败，请手动复制链接");
+    }
+  }
+
+  async function regenerateUrl() {
+    if (!result?.duplicate) return;
+
+    const expiresAt = roundToMinute(expiresAtDate).getTime();
+
+    if (expiresAt <= Date.now() || expiresAt > Date.now() + maxExpiresMs) {
+      toast.error("过期时间必须精确到分钟，并且在未来 30 天内");
+      return;
+    }
+
+    setIsRegenerating(true);
+
+    try {
+      const response = await fetch("/api/regenerate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          token: result.file.token,
+          expiresAt,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error || "重新生成失败");
+      }
+
+      setResult(payload);
+      toast.success("已重新生成链接");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "重新生成失败");
+    } finally {
+      setIsRegenerating(false);
     }
   }
 
@@ -392,7 +436,23 @@ export function FileShareForm() {
                 </div>
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {result.duplicate ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex-1"
+                  onClick={regenerateUrl}
+                  disabled={isRegenerating}
+                >
+                  {isRegenerating ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-4" />
+                  )}
+                  重新生成
+                </Button>
+              ) : null}
               <Button type="button" variant="outline" className="flex-1" onClick={copyUrl}>
                 <Copy className="size-4" />
                 复制

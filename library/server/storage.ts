@@ -69,7 +69,7 @@ export async function getDb() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         token TEXT NOT NULL UNIQUE,
         original_name TEXT NOT NULL,
-        stored_name TEXT NOT NULL UNIQUE,
+        stored_name TEXT NOT NULL,
         mime_type TEXT NOT NULL,
         size INTEGER NOT NULL,
         sha256 TEXT NOT NULL,
@@ -80,12 +80,72 @@ export async function getDb() {
       CREATE INDEX IF NOT EXISTS idx_files_sha256_expires_at
         ON files (sha256, expires_at);
 
+      CREATE INDEX IF NOT EXISTS idx_files_stored_name
+        ON files (stored_name);
+
       CREATE INDEX IF NOT EXISTS idx_files_token
         ON files (token);
     `);
+    migrateStoredNameUniqueness(db);
   }
 
   return db;
+}
+
+function migrateStoredNameUniqueness(database: DatabaseSync) {
+  const indexes = database.prepare("PRAGMA index_list(files)").all() as Array<{
+    name: string;
+    unique: number;
+  }>;
+  const hasStoredNameUniqueIndex = indexes.some((index) => {
+    if (!index.unique) return false;
+
+    const columns = database
+      .prepare(`PRAGMA index_info(${JSON.stringify(index.name)})`)
+      .all() as Array<{ name: string }>;
+
+    return columns.length === 1 && columns[0]?.name === "stored_name";
+  });
+
+  if (!hasStoredNameUniqueIndex) {
+    return;
+  }
+
+  database.exec(`
+    BEGIN TRANSACTION;
+
+    CREATE TABLE files_next (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token TEXT NOT NULL UNIQUE,
+      original_name TEXT NOT NULL,
+      stored_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    INSERT INTO files_next (
+      id, token, original_name, stored_name, mime_type, size, sha256, expires_at, created_at
+    )
+    SELECT id, token, original_name, stored_name, mime_type, size, sha256, expires_at, created_at
+    FROM files;
+
+    DROP TABLE files;
+    ALTER TABLE files_next RENAME TO files;
+
+    CREATE INDEX idx_files_sha256_expires_at
+      ON files (sha256, expires_at);
+
+    CREATE INDEX idx_files_stored_name
+      ON files (stored_name);
+
+    CREATE INDEX idx_files_token
+      ON files (token);
+
+    COMMIT;
+  `);
 }
 
 export function validateExpiresAt(expiresAt: number) {
@@ -138,11 +198,17 @@ export async function cleanupExpiredFiles() {
     .prepare("SELECT * FROM files WHERE expires_at <= ?")
     .all(now) as FileRecordRow[];
 
-  for (const row of expiredRows) {
-    await unlink(path.join(uploadsDir, row.stored_name)).catch(() => undefined);
-  }
-
   database.prepare("DELETE FROM files WHERE expires_at <= ?").run(now);
+
+  for (const row of expiredRows) {
+    const activeReference = database
+      .prepare("SELECT id FROM files WHERE stored_name = ? LIMIT 1")
+      .get(row.stored_name);
+
+    if (!activeReference) {
+      await unlink(path.join(uploadsDir, row.stored_name)).catch(() => undefined);
+    }
+  }
 }
 
 export async function saveUpload(file: File, expiresAt: number) {
@@ -254,6 +320,62 @@ export async function saveUpload(file: File, expiresAt: number) {
   };
 }
 
+export async function regenerateSharedFile(token: string, expiresAt: number) {
+  await cleanupExpiredFiles();
+
+  const expiresError = validateExpiresAt(expiresAt);
+
+  if (expiresError) {
+    throw new Error(expiresError);
+  }
+
+  const database = await getDb();
+  const sourceRow = database
+    .prepare("SELECT * FROM files WHERE token = ? AND expires_at > ? LIMIT 1")
+    .get(token, Date.now()) as FileRecordRow | undefined;
+
+  if (!sourceRow) {
+    throw new Error("原链接不可用，无法重新生成");
+  }
+
+  const sourcePath = path.join(uploadsDir, sourceRow.stored_name);
+  const exists = await stat(sourcePath)
+    .then((fileStat) => fileStat.isFile())
+    .catch(() => false);
+
+  if (!exists) {
+    database.prepare("DELETE FROM files WHERE stored_name = ?").run(sourceRow.stored_name);
+    throw new Error("源文件不存在，无法重新生成");
+  }
+
+  const nextToken = createShortToken(database);
+  const createdAt = Date.now();
+  const insertResult = database
+    .prepare(
+      `INSERT INTO files (
+        token, original_name, stored_name, mime_type, size, sha256, expires_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      nextToken,
+      sourceRow.original_name,
+      sourceRow.stored_name,
+      sourceRow.mime_type,
+      sourceRow.size,
+      sourceRow.sha256,
+      expiresAt,
+      createdAt
+    );
+
+  return rowToFile({
+    ...sourceRow,
+    id: Number(insertResult.lastInsertRowid),
+    token: nextToken,
+    expires_at: expiresAt,
+    created_at: createdAt,
+  });
+}
+
 export async function getSharedFile(token: string) {
   await cleanupExpiredFiles();
 
@@ -268,8 +390,15 @@ export async function getSharedFile(token: string) {
 export async function deleteSharedFile(sharedFile: SharedFile) {
   const database = await getDb();
 
-  await unlink(path.join(uploadsDir, sharedFile.storedName)).catch(() => undefined);
   database.prepare("DELETE FROM files WHERE id = ?").run(sharedFile.id);
+
+  const activeReference = database
+    .prepare("SELECT id FROM files WHERE stored_name = ? LIMIT 1")
+    .get(sharedFile.storedName);
+
+  if (!activeReference) {
+    await unlink(path.join(uploadsDir, sharedFile.storedName)).catch(() => undefined);
+  }
 }
 
 export async function openSharedFile(sharedFile: SharedFile) {

@@ -24,6 +24,7 @@ export async function POST(request: NextRequest) {
       url,
       duplicate: result.duplicate,
       file: {
+        token: result.file.token,
         name: result.file.originalName,
         size: result.file.size,
         expiresAt: result.file.expiresAt,
