@@ -14,6 +14,8 @@ const dataDir = path.join(process.cwd(), "data");
 const uploadsDir = path.join(dataDir, "uploads");
 const dbPath = path.join(dataDir, "dropstation.sqlite");
 
+const tokenAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
 type FileRecordRow = {
   id: number;
   token: string;
@@ -211,18 +213,40 @@ export function createDownloadUrl(request: Pick<Request, "headers" | "url">, tok
 }
 
 function createShortToken(database: DatabaseSync) {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const token = randomBytes(6).toString("base64url");
-    const existing = database
-      .prepare("SELECT id FROM files WHERE token = ? LIMIT 1")
-      .get(token);
+  const tokenExists = (token: string) =>
+    Boolean(
+      database.prepare("SELECT id FROM files WHERE token = ? LIMIT 1").get(token)
+    );
 
-    if (!existing) {
-      return token;
+  const createToken = (length: number) => {
+    let token = "";
+
+    while (token.length < length) {
+      for (const byte of randomBytes(length)) {
+        if (byte >= 248) continue;
+
+        token += tokenAlphabet[byte % tokenAlphabet.length];
+
+        if (token.length === length) {
+          break;
+        }
+      }
+    }
+
+    return token;
+  };
+
+  for (let tokenLength = 6; tokenLength <= 12; tokenLength += 1) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const token = createToken(tokenLength);
+
+      if (!tokenExists(token)) {
+        return token;
+      }
     }
   }
 
-  return randomBytes(9).toString("base64url");
+  throw new Error("无法生成唯一链接，请重试");
 }
 
 export async function cleanupExpiredFiles() {
