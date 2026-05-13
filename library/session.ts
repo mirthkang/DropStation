@@ -41,7 +41,7 @@ export async function createSession(userId: number) {
 
   cookieStore.set(sessionCookieName, session, {
     httpOnly: true,
-    secure: false, // 局域网环境下不使用 secure，生产环境请设置为 true
+    secure: process.env.SESSION_SECURE === 'true',
     expires: expiresAt,
     sameSite: 'lax',
     path: '/',
