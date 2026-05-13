@@ -4,7 +4,7 @@ import { jwtVerify, SignJWT } from 'jose'
 import { cookies } from 'next/headers'
 
 // 续期阈值天数
-const renewalThresholdDays = 7
+const renewalThresholdDays = parseInt(process.env.SESSION_RENEWAL_THRESHOLD_DAYS || '10', 10)
 const secretExpiryDays = parseInt(process.env.SESSION_EXPIRY_DAYS || '30', 10)
 
 const encodedSessionKey = new TextEncoder().encode(process.env.SESSION_SECRET || 'default_secret')
