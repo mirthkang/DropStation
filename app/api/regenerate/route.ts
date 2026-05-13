@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
     }
 
     const file = await regenerateSharedFile(token, expiresAt);
-    const url = createDownloadUrl(request.url, file.token);
+    const url = createDownloadUrl(request, file.token);
 
     return Response.json({
       url,

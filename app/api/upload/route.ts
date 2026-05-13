@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     const expiresAt =
       typeof expiresAtValue === "string" ? Number(expiresAtValue) : Number.NaN;
     const result = await saveUpload(file, expiresAt);
-    const url = createDownloadUrl(request.url, result.file.token);
+    const url = createDownloadUrl(request, result.file.token);
 
     return Response.json({
       url,

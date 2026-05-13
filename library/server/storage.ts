@@ -171,9 +171,43 @@ export function contentDispositionForDownload(name: string) {
   return `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
-export function createDownloadUrl(requestUrl: string, token: string) {
-  const url = new URL(requestUrl);
-  return `${url.origin}/d/${token}`;
+function firstHeaderValue(value: string | null) {
+  return value?.split(",")[0]?.trim() || null;
+}
+
+function requestOrigin(request: Pick<Request, "headers" | "url">) {
+  const fallbackUrl = new URL(request.url);
+  const forwardedHost = firstHeaderValue(request.headers.get("x-forwarded-host"));
+
+  if (forwardedHost) {
+    const protocol =
+      firstHeaderValue(request.headers.get("x-forwarded-proto")) ??
+      fallbackUrl.protocol.replace(":", "");
+
+    return `${protocol}://${forwardedHost}`;
+  }
+
+  const origin = request.headers.get("origin");
+
+  if (origin) {
+    return new URL(origin).origin;
+  }
+
+  const host = firstHeaderValue(request.headers.get("host"));
+
+  if (host) {
+    const protocol =
+      firstHeaderValue(request.headers.get("x-forwarded-proto")) ??
+      fallbackUrl.protocol.replace(":", "");
+
+    return `${protocol}://${host}`;
+  }
+
+  return fallbackUrl.origin;
+}
+
+export function createDownloadUrl(request: Pick<Request, "headers" | "url">, token: string) {
+  return `${requestOrigin(request)}/d/${token}`;
 }
 
 function createShortToken(database: DatabaseSync) {
