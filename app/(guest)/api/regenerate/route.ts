@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { createDownloadUrl, regenerateSharedFile } from "@/library/server/storage";
+import { getSession } from "@/library/session";
 
 export const runtime = "nodejs";
 
@@ -14,7 +15,8 @@ export async function POST(request: NextRequest) {
       return Response.json({ error: "缺少原链接信息" }, { status: 400 });
     }
 
-    const file = await regenerateSharedFile(token, expiresAt);
+    const session = await getSession();
+    const file = await regenerateSharedFile(token, expiresAt, session?.userId ?? null);
     const url = createDownloadUrl(request, file.token);
 
     return Response.json({

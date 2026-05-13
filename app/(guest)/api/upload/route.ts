@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { createDownloadUrl, saveUpload } from "@/library/server/storage";
+import { getSession } from "@/library/session";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -17,7 +18,8 @@ export async function POST(request: NextRequest) {
 
     const expiresAt =
       typeof expiresAtValue === "string" ? Number(expiresAtValue) : Number.NaN;
-    const result = await saveUpload(file, expiresAt);
+    const session = await getSession();
+    const result = await saveUpload(file, expiresAt, session?.userId ?? null);
     const url = createDownloadUrl(request, result.file.token);
 
     return Response.json({

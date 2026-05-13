@@ -24,6 +24,7 @@ type FileRecordRow = {
   mime_type: string;
   size: number;
   sha256: string;
+  owner_user_id: number | null;
   expires_at: number;
   created_at: number;
 };
@@ -36,6 +37,7 @@ export type SharedFile = {
   mimeType: string;
   size: number;
   sha256: string;
+  ownerUserId: number | null;
   expiresAt: number;
   createdAt: number;
 };
@@ -51,6 +53,7 @@ function rowToFile(row: FileRecordRow): SharedFile {
     mimeType: row.mime_type,
     size: row.size,
     sha256: row.sha256,
+    ownerUserId: row.owner_user_id,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
   };
@@ -75,6 +78,7 @@ export async function getDb() {
         mime_type TEXT NOT NULL,
         size INTEGER NOT NULL,
         sha256 TEXT NOT NULL,
+        owner_user_id INTEGER,
         expires_at INTEGER NOT NULL,
         created_at INTEGER NOT NULL
       );
@@ -87,67 +91,25 @@ export async function getDb() {
 
       CREATE INDEX IF NOT EXISTS idx_files_token
         ON files (token);
+
+      CREATE INDEX IF NOT EXISTS idx_files_owner_user_id
+        ON files (owner_user_id, expires_at);
+
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        is_admin INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_users_username
+        ON users (username);
     `);
-    migrateStoredNameUniqueness(db);
   }
 
   return db;
-}
-
-function migrateStoredNameUniqueness(database: DatabaseSync) {
-  const indexes = database.prepare("PRAGMA index_list(files)").all() as Array<{
-    name: string;
-    unique: number;
-  }>;
-  const hasStoredNameUniqueIndex = indexes.some((index) => {
-    if (!index.unique) return false;
-
-    const columns = database
-      .prepare(`PRAGMA index_info(${JSON.stringify(index.name)})`)
-      .all() as Array<{ name: string }>;
-
-    return columns.length === 1 && columns[0]?.name === "stored_name";
-  });
-
-  if (!hasStoredNameUniqueIndex) {
-    return;
-  }
-
-  database.exec(`
-    BEGIN TRANSACTION;
-
-    CREATE TABLE files_next (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token TEXT NOT NULL UNIQUE,
-      original_name TEXT NOT NULL,
-      stored_name TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      size INTEGER NOT NULL,
-      sha256 TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
-    INSERT INTO files_next (
-      id, token, original_name, stored_name, mime_type, size, sha256, expires_at, created_at
-    )
-    SELECT id, token, original_name, stored_name, mime_type, size, sha256, expires_at, created_at
-    FROM files;
-
-    DROP TABLE files;
-    ALTER TABLE files_next RENAME TO files;
-
-    CREATE INDEX idx_files_sha256_expires_at
-      ON files (sha256, expires_at);
-
-    CREATE INDEX idx_files_stored_name
-      ON files (stored_name);
-
-    CREATE INDEX idx_files_token
-      ON files (token);
-
-    COMMIT;
-  `);
 }
 
 export function validateExpiresAt(expiresAt: number) {
@@ -212,6 +174,10 @@ export function createDownloadUrl(request: Pick<Request, "headers" | "url">, tok
   return `${requestOrigin(request)}/d/${token}`;
 }
 
+export function createDownloadUrlFromHeaders(headers: Headers, token: string) {
+  return createDownloadUrl({ headers, url: "http://localhost" }, token);
+}
+
 function createShortToken(database: DatabaseSync) {
   const tokenExists = (token: string) =>
     Boolean(
@@ -269,7 +235,7 @@ export async function cleanupExpiredFiles() {
   }
 }
 
-export async function saveUpload(file: File, expiresAt: number) {
+export async function saveUpload(file: File, expiresAt: number, ownerUserId?: number | null) {
   await cleanupExpiredFiles();
 
   if (file.size <= 0) {
@@ -348,8 +314,8 @@ export async function saveUpload(file: File, expiresAt: number) {
   const insertResult = database
     .prepare(
       `INSERT INTO files (
-        token, original_name, stored_name, mime_type, size, sha256, expires_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        token, original_name, stored_name, mime_type, size, sha256, owner_user_id, expires_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       token,
@@ -358,6 +324,7 @@ export async function saveUpload(file: File, expiresAt: number) {
       file.type || "application/octet-stream",
       file.size,
       sha256,
+      ownerUserId ?? null,
       expiresAt,
       createdAt
     );
@@ -371,6 +338,7 @@ export async function saveUpload(file: File, expiresAt: number) {
       mimeType: file.type || "application/octet-stream",
       size: file.size,
       sha256,
+      ownerUserId: ownerUserId ?? null,
       expiresAt,
       createdAt,
     },
@@ -378,7 +346,11 @@ export async function saveUpload(file: File, expiresAt: number) {
   };
 }
 
-export async function regenerateSharedFile(token: string, expiresAt: number) {
+export async function regenerateSharedFile(
+  token: string,
+  expiresAt: number,
+  ownerUserId?: number | null
+) {
   await cleanupExpiredFiles();
 
   const expiresError = validateExpiresAt(expiresAt);
@@ -411,8 +383,8 @@ export async function regenerateSharedFile(token: string, expiresAt: number) {
   const insertResult = database
     .prepare(
       `INSERT INTO files (
-        token, original_name, stored_name, mime_type, size, sha256, expires_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        token, original_name, stored_name, mime_type, size, sha256, owner_user_id, expires_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       nextToken,
@@ -421,6 +393,7 @@ export async function regenerateSharedFile(token: string, expiresAt: number) {
       sourceRow.mime_type,
       sourceRow.size,
       sourceRow.sha256,
+      ownerUserId ?? sourceRow.owner_user_id,
       expiresAt,
       createdAt
     );
@@ -429,9 +402,39 @@ export async function regenerateSharedFile(token: string, expiresAt: number) {
     ...sourceRow,
     id: Number(insertResult.lastInsertRowid),
     token: nextToken,
+    owner_user_id: ownerUserId ?? sourceRow.owner_user_id,
     expires_at: expiresAt,
     created_at: createdAt,
   });
+}
+
+export async function getSharedFilesByOwner(ownerUserId: number) {
+  await cleanupExpiredFiles();
+
+  const database = await getDb();
+  const rows = database
+    .prepare(
+      "SELECT * FROM files WHERE owner_user_id = ? AND expires_at > ? ORDER BY created_at DESC"
+    )
+    .all(ownerUserId, Date.now()) as FileRecordRow[];
+
+  return rows.map(rowToFile);
+}
+
+export async function deleteSharedFileByOwner(token: string, ownerUserId: number) {
+  await cleanupExpiredFiles();
+
+  const database = await getDb();
+  const row = database
+    .prepare("SELECT * FROM files WHERE token = ? AND owner_user_id = ? LIMIT 1")
+    .get(token, ownerUserId) as FileRecordRow | undefined;
+
+  if (!row) {
+    return false;
+  }
+
+  await deleteSharedFile(rowToFile(row));
+  return true;
 }
 
 export async function getSharedFile(token: string) {
