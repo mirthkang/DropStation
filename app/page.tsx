@@ -10,7 +10,7 @@ export default function Home() {
             <p className="text-sm font-medium text-muted-foreground">DropStation</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">文件中转站</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              无需登录，上传文件后生成一个可直接下载的临时中转链接。文件保存在本机项目目录，最多保留 30 天。
+              无需登录，上传文件后生成一个可直接下载的临时中转链接。链接到期后自动失效，最长保留 30 天。
             </p>
           </div>
           <ThemeToggle />

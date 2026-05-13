@@ -396,10 +396,6 @@ export function FileShareForm() {
                 />
               </PopoverContent>
             </Popover>
-
-            <p className="text-sm text-muted-foreground">
-              当前选择：{format(expiresAtDate, "yyyy年MM月dd日 HH:mm", { locale: zhCN })}
-            </p>
           </div>
         </div>
 
@@ -412,7 +408,7 @@ export function FileShareForm() {
       <aside className="rounded-lg border bg-card p-5 shadow-sm">
         <h2 className="text-lg font-semibold">分享链接</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          上传完成后，这里会显示可直接下载的 URL。
+          上传后生成下载链接。
         </p>
 
         {result ? (
