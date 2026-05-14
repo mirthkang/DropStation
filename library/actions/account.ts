@@ -7,9 +7,11 @@ import z from "zod";
 import { getSession } from "@/library/session";
 import {
   getUserById,
+  updateUserAvatarPath,
   updateUserName,
   updateUserPassword,
 } from "@/library/server/users";
+import { deleteAvatar, saveAvatar } from "@/library/server/storage";
 
 export type AccountFormState = {
   errors?: {
@@ -17,6 +19,7 @@ export type AccountFormState = {
     currentPassword?: string[];
     password?: string[];
     confirmPassword?: string[];
+    avatar?: string[];
   };
   message?: string;
   success?: boolean;
@@ -32,10 +35,10 @@ const UpdatePasswordSchema = z.object({
   confirmPassword: z.string().min(6, { error: "确认密码至少需要6个字符" }).trim(),
 });
 
-export async function updateNameAction(
+export async function updateProfileAction(
   _state: AccountFormState,
   data: FormData
-) {
+): Promise<AccountFormState> {
   const session = await getSession();
 
   if (!session?.userId) {
@@ -52,17 +55,42 @@ export async function updateNameAction(
     };
   }
 
+  const user = await getUserById(session.userId);
+
+  if (!user) {
+    return { message: "用户不存在，请重新登录。" };
+  }
+
+  const avatar = data.get("avatar");
+  let avatarPath: string | null = null;
+
+  if (avatar instanceof File && avatar.size > 0) {
+    try {
+      avatarPath = await saveAvatar(avatar, session.userId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "头像上传失败，请重试。";
+
+      return { errors: { avatar: [message] } };
+    }
+  }
+
   await updateUserName(session.userId, validatedFields.data.name);
+
+  if (avatarPath) {
+    await updateUserAvatarPath(session.userId, avatarPath);
+    await deleteAvatar(user.avatarPath);
+  }
+
   revalidatePath("/");
   revalidatePath("/account");
 
-  return { success: true, message: "姓名已更新。" };
+  return { success: true, message: "账户信息已更新。" };
 }
 
 export async function updatePasswordAction(
   _state: AccountFormState,
   data: FormData
-) {
+): Promise<AccountFormState> {
   const session = await getSession();
 
   if (!session?.userId) {

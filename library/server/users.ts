@@ -7,6 +7,7 @@ type UserRow = {
   password_hash: string;
   is_admin: number;
   created_at: number;
+  avatar_path: string | null;
 };
 
 export type User = {
@@ -16,6 +17,7 @@ export type User = {
   passwordHash: string;
   isAdmin: boolean;
   createdAt: number;
+  avatarPath: string | null;
 };
 
 function rowToUser(row: UserRow): User {
@@ -26,6 +28,7 @@ function rowToUser(row: UserRow): User {
     passwordHash: row.password_hash,
     isAdmin: row.is_admin === 1,
     createdAt: row.created_at,
+    avatarPath: row.avatar_path,
   };
 }
 
@@ -87,6 +90,7 @@ export async function createUser(input: {
     passwordHash: input.passwordHash,
     isAdmin,
     createdAt,
+    avatarPath: null,
   };
 }
 
@@ -100,4 +104,11 @@ export async function updateUserPassword(userId: number, passwordHash: string) {
   database
     .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
     .run(passwordHash, userId);
+}
+
+export async function updateUserAvatarPath(userId: number, avatarPath: string) {
+  const database = await getDb();
+  database
+    .prepare("UPDATE users SET avatar_path = ? WHERE id = ?")
+    .run(avatarPath, userId);
 }

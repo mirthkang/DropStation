@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { LayoutDashboard, LogOut, UserRound, UploadCloud } from "lucide-react";
 
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { UserAvatar } from "@/components/user-avatar";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -20,12 +20,11 @@ type UserMenuProps = {
     name: string;
     username: string;
     isAdmin: boolean;
+    avatarPath: string | null;
   };
 };
 
 export function UserMenu({ user }: UserMenuProps) {
-  const avatarText = user.name.trim().slice(0, 1).toUpperCase() || "U";
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -33,9 +32,7 @@ export function UserMenu({ user }: UserMenuProps) {
           <Button type="button" variant="outline" className="h-9 gap-2 px-2" />
         }
       >
-        <Avatar size="sm">
-          <AvatarFallback>{avatarText}</AvatarFallback>
-        </Avatar>
+        <UserAvatar name={user.name} avatarPath={user.avatarPath} size="sm" />
         <span className="hidden max-w-28 truncate sm:inline">{user.name}</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" >

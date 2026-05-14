@@ -12,7 +12,22 @@ export const MAX_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000;
 
 const dataDir = path.join(process.cwd(), "data");
 const uploadsDir = path.join(dataDir, "uploads");
+const avatarDir = path.join(dataDir, "avatar");
 const dbPath = path.join(dataDir, "dropstation.sqlite");
+const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
+const avatarMimeExtensions = new Map([
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/webp", ".webp"],
+  ["image/gif", ".gif"],
+]);
+const avatarMimeTypes = new Map([
+  [".gif", "image/gif"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+]);
 
 const tokenAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
@@ -60,8 +75,9 @@ function rowToFile(row: FileRecordRow): SharedFile {
 }
 
 export async function ensureStorage() {
-  await mkdir(uploadsDir, { recursive: true });
   await mkdir(dataDir, { recursive: true });
+  await mkdir(uploadsDir, { recursive: true });
+  await mkdir(avatarDir, { recursive: true });
 }
 
 export async function getDb() {
@@ -107,9 +123,103 @@ export async function getDb() {
       CREATE INDEX IF NOT EXISTS idx_users_username
         ON users (username);
     `);
+
+    const userColumns = db
+      .prepare("PRAGMA table_info(users)")
+      .all() as { name: string }[];
+
+    if (!userColumns.some((column) => column.name === "avatar_path")) {
+      db.exec("ALTER TABLE users ADD COLUMN avatar_path TEXT");
+    }
   }
 
   return db;
+}
+
+function avatarPathFor(storedName: string) {
+  return path.join(avatarDir, storedName);
+}
+
+export function avatarUrl(storedName: string | null) {
+  return storedName ? `/avatar/${encodeURIComponent(storedName)}` : null;
+}
+
+export function avatarContentType(storedName: string) {
+  return avatarMimeTypes.get(path.extname(storedName).toLowerCase()) ?? "application/octet-stream";
+}
+
+export async function saveAvatar(file: File, userId: number) {
+  await ensureStorage();
+
+  if (file.size <= 0) {
+    throw new Error("请选择一个非空头像文件");
+  }
+
+  if (file.size > MAX_AVATAR_SIZE) {
+    throw new Error("头像最大不能超过 5MB");
+  }
+
+  const extension = avatarMimeExtensions.get(file.type);
+
+  if (!extension) {
+    throw new Error("头像仅支持 JPG、PNG、WebP 或 GIF 图片");
+  }
+
+  const tempName = `.avatar-${randomBytes(16).toString("hex")}.tmp`;
+  const tempPath = avatarPathFor(tempName);
+  const storedName = `${userId}-${randomBytes(16).toString("hex")}${extension}`;
+  const storedPath = avatarPathFor(storedName);
+  let writtenBytes = 0;
+
+  const writeStream = createWriteStream(tempPath, { flags: "wx" });
+  const source = Readable.fromWeb(
+    file.stream() as unknown as NodeReadableStream<Uint8Array>
+  );
+
+  source.on("data", (chunk: Buffer) => {
+    writtenBytes += chunk.length;
+
+    if (writtenBytes > MAX_AVATAR_SIZE) {
+      source.destroy(new Error("头像最大不能超过 5MB"));
+    }
+  });
+
+  try {
+    await pipeline(source, writeStream);
+    await rename(tempPath, storedPath);
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+
+  return storedName;
+}
+
+export async function deleteAvatar(storedName: string | null) {
+  if (!storedName || !/^[a-zA-Z0-9._-]+$/.test(storedName)) {
+    return;
+  }
+
+  await unlink(avatarPathFor(storedName)).catch(() => undefined);
+}
+
+export async function openAvatar(storedName: string) {
+  if (!/^[a-zA-Z0-9._-]+$/.test(storedName)) {
+    return null;
+  }
+
+  const filePath = avatarPathFor(storedName);
+  const fileStat = await stat(filePath).catch(() => null);
+
+  if (!fileStat?.isFile()) {
+    return null;
+  }
+
+  return {
+    contentType: avatarContentType(storedName),
+    size: fileStat.size,
+    stream: createReadStream(filePath),
+  };
 }
 
 export function validateExpiresAt(expiresAt: number) {
