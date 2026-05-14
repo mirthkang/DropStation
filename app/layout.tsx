@@ -12,7 +12,7 @@ export default function RootLayout({ children }: Readonly<React.PropsWithChildre
   return (
     <html lang="zh-CN" suppressHydrationWarning className="h-full antialiased"    >
       <body className="min-h-full flex flex-col">
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           {children}
           <Toaster richColors position="top-center" />
         </ThemeProvider>
