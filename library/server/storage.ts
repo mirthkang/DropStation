@@ -12,7 +12,7 @@ export const MAX_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000;
 
 const dataDir = path.join(process.cwd(), "data");
 const uploadsDir = path.join(dataDir, "uploads");
-const avatarDir = path.join(dataDir, "avatar");
+const avatarDir = path.join(dataDir, "avatars");
 const dbPath = path.join(dataDir, "dropstation.sqlite");
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
 const avatarMimeExtensions = new Map([
