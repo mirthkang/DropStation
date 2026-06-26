@@ -42,6 +42,8 @@ type FileRecordRow = {
   owner_user_id: number | null;
   expires_at: number;
   created_at: number;
+  download_count: number;
+  last_downloaded_at: number | null;
 };
 
 export type SharedFile = {
@@ -55,6 +57,29 @@ export type SharedFile = {
   ownerUserId: number | null;
   expiresAt: number;
   createdAt: number;
+  downloadCount: number;
+  lastDownloadedAt: number | null;
+};
+
+export type AdminShareStatus = "active" | "expired" | "missing";
+
+export type AdminShareRecord = SharedFile & {
+  ownerName: string | null;
+  ownerUsername: string | null;
+  status: AdminShareStatus;
+};
+
+export type AdminShareFilters = {
+  query?: string;
+  status?: "all" | AdminShareStatus;
+  sort?: "created_desc" | "created_asc" | "expires_asc" | "expires_desc" | "size_desc";
+  limit?: number;
+};
+
+export type CleanupExpiredFilesResult = {
+  recordsDeleted: number;
+  filesDeleted: number;
+  bytesFreed: number;
 };
 
 let db: DatabaseSync | null = null;
@@ -71,6 +96,8 @@ function rowToFile(row: FileRecordRow): SharedFile {
     ownerUserId: row.owner_user_id,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
+    downloadCount: row.download_count ?? 0,
+    lastDownloadedAt: row.last_downloaded_at ?? null,
   };
 }
 
@@ -96,7 +123,9 @@ export async function getDb() {
         sha256 TEXT NOT NULL,
         owner_user_id INTEGER,
         expires_at INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        download_count INTEGER NOT NULL DEFAULT 0,
+        last_downloaded_at INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_files_sha256_expires_at
@@ -122,7 +151,29 @@ export async function getDb() {
 
       CREATE INDEX IF NOT EXISTS idx_users_username
         ON users (username);
+
+      CREATE TABLE IF NOT EXISTS download_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id INTEGER NOT NULL,
+        token TEXT NOT NULL,
+        downloaded_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_download_events_downloaded_at
+        ON download_events (downloaded_at);
     `);
+
+    const fileColumns = db
+      .prepare("PRAGMA table_info(files)")
+      .all() as { name: string }[];
+
+    if (!fileColumns.some((column) => column.name === "download_count")) {
+      db.exec("ALTER TABLE files ADD COLUMN download_count INTEGER NOT NULL DEFAULT 0");
+    }
+
+    if (!fileColumns.some((column) => column.name === "last_downloaded_at")) {
+      db.exec("ALTER TABLE files ADD COLUMN last_downloaded_at INTEGER");
+    }
 
     const userColumns = db
       .prepare("PRAGMA table_info(users)")
@@ -325,7 +376,7 @@ function createShortToken(database: DatabaseSync) {
   throw new Error("无法生成唯一链接，请重试");
 }
 
-export async function cleanupExpiredFiles() {
+export async function cleanupExpiredFiles(): Promise<CleanupExpiredFilesResult> {
   const database = await getDb();
   const now = Date.now();
   const expiredRows = database
@@ -334,15 +385,35 @@ export async function cleanupExpiredFiles() {
 
   database.prepare("DELETE FROM files WHERE expires_at <= ?").run(now);
 
+  let filesDeleted = 0;
+  let bytesFreed = 0;
+
   for (const row of expiredRows) {
     const activeReference = database
       .prepare("SELECT id FROM files WHERE stored_name = ? LIMIT 1")
       .get(row.stored_name);
 
     if (!activeReference) {
-      await unlink(path.join(uploadsDir, row.stored_name)).catch(() => undefined);
+      const filePath = path.join(uploadsDir, row.stored_name);
+      const fileSize = await stat(filePath)
+        .then((fileStat) => (fileStat.isFile() ? fileStat.size : 0))
+        .catch(() => 0);
+      const deleted = await unlink(filePath)
+        .then(() => true)
+        .catch(() => false);
+
+      if (deleted) {
+        filesDeleted += 1;
+        bytesFreed += fileSize;
+      }
     }
   }
+
+  return {
+    recordsDeleted: expiredRows.length,
+    filesDeleted,
+    bytesFreed,
+  };
 }
 
 export async function saveUpload(file: File, expiresAt: number, ownerUserId?: number | null) {
@@ -447,11 +518,13 @@ export async function saveUpload(file: File, expiresAt: number, ownerUserId?: nu
       storedName,
       mimeType: file.type || "application/octet-stream",
       size: file.size,
-      sha256,
-      ownerUserId: ownerUserId ?? null,
-      expiresAt,
-      createdAt,
-    },
+        sha256,
+        ownerUserId: ownerUserId ?? null,
+        expiresAt,
+        createdAt,
+        downloadCount: 0,
+        lastDownloadedAt: null,
+      },
     duplicate: false,
   };
 }
@@ -558,6 +631,23 @@ export async function getSharedFile(token: string) {
   return row ? rowToFile(row) : null;
 }
 
+export async function recordSharedFileDownload(sharedFile: SharedFile) {
+  const database = await getDb();
+  const downloadedAt = Date.now();
+
+  database
+    .prepare(
+      `UPDATE files
+       SET download_count = download_count + 1, last_downloaded_at = ?
+       WHERE id = ?`
+    )
+    .run(downloadedAt, sharedFile.id);
+
+  database
+    .prepare("INSERT INTO download_events (file_id, token, downloaded_at) VALUES (?, ?, ?)")
+    .run(sharedFile.id, sharedFile.token, downloadedAt);
+}
+
 export async function deleteSharedFile(sharedFile: SharedFile) {
   const database = await getDb();
 
@@ -570,6 +660,175 @@ export async function deleteSharedFile(sharedFile: SharedFile) {
   if (!activeReference) {
     await unlink(path.join(uploadsDir, sharedFile.storedName)).catch(() => undefined);
   }
+}
+
+function startOfToday() {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+export async function getAdminDashboardStats() {
+  const database = await getDb();
+  const now = Date.now();
+  const todayStart = startOfToday();
+  const fileStats = database
+    .prepare(
+      `SELECT
+        COUNT(*) AS totalFiles,
+        COALESCE((SELECT SUM(size) FROM (
+          SELECT stored_name, MAX(size) AS size FROM files GROUP BY stored_name
+        )), 0) AS totalBytes,
+        COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS todayUploads,
+        COALESCE(SUM(CASE WHEN expires_at > ? THEN 1 ELSE 0 END), 0) AS activeFiles,
+        COALESCE(SUM(CASE WHEN expires_at <= ? THEN 1 ELSE 0 END), 0) AS expiredFiles,
+        COALESCE(SUM(CASE WHEN expires_at > ? AND expires_at <= ? THEN 1 ELSE 0 END), 0) AS expiringSoonFiles
+       FROM files`
+    )
+    .get(todayStart, now, now, now, now + 24 * 60 * 60 * 1000) as {
+      totalFiles: number;
+      totalBytes: number;
+      todayUploads: number;
+      activeFiles: number;
+      expiredFiles: number;
+      expiringSoonFiles: number;
+    };
+  const userStats = database
+    .prepare("SELECT COUNT(*) AS totalUsers FROM users")
+    .get() as { totalUsers: number };
+  const downloadStats = database
+    .prepare("SELECT COUNT(*) AS todayDownloads FROM download_events WHERE downloaded_at >= ?")
+    .get(todayStart) as { todayDownloads: number };
+
+  return {
+    ...fileStats,
+    ...userStats,
+    todayDownloads: downloadStats.todayDownloads,
+  };
+}
+
+export async function getRecentUploads(limit = 5) {
+  const database = await getDb();
+  const rows = database
+    .prepare(
+      `SELECT
+        files.*,
+        users.name AS owner_name,
+        users.username AS owner_username
+       FROM files
+       LEFT JOIN users ON users.id = files.owner_user_id
+       ORDER BY files.created_at DESC
+       LIMIT ?`
+    )
+    .all(Math.max(1, Math.min(limit, 20))) as Array<
+    FileRecordRow & { owner_name: string | null; owner_username: string | null }
+  >;
+
+  return rows.map((row) => ({
+    ...rowToFile(row),
+    ownerName: row.owner_name,
+    ownerUsername: row.owner_username,
+    status: row.expires_at <= Date.now() ? "expired" : "active",
+  })) satisfies AdminShareRecord[];
+}
+
+function adminSortSql(sort: AdminShareFilters["sort"]) {
+  switch (sort) {
+    case "created_asc":
+      return "files.created_at ASC";
+    case "expires_asc":
+      return "files.expires_at ASC";
+    case "expires_desc":
+      return "files.expires_at DESC";
+    case "size_desc":
+      return "files.size DESC";
+    case "created_desc":
+    default:
+      return "files.created_at DESC";
+  }
+}
+
+export async function getAdminSharedFiles(filters: AdminShareFilters = {}) {
+  const database = await getDb();
+  const now = Date.now();
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+  const query = filters.query?.trim();
+
+  if (query) {
+    clauses.push(
+      "(files.original_name LIKE ? OR files.token LIKE ? OR users.name LIKE ? OR users.username LIKE ?)"
+    );
+    const pattern = `%${query}%`;
+    params.push(pattern, pattern, pattern, pattern);
+  }
+
+  if (filters.status === "active") {
+    clauses.push("files.expires_at > ?");
+    params.push(now);
+  }
+
+  if (filters.status === "expired") {
+    clauses.push("files.expires_at <= ?");
+    params.push(now);
+  }
+
+  const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+  const limit = Math.max(1, Math.min(filters.limit ?? 50, 100));
+  const rows = database
+    .prepare(
+      `SELECT
+        files.*,
+        users.name AS owner_name,
+        users.username AS owner_username
+       FROM files
+       LEFT JOIN users ON users.id = files.owner_user_id
+       ${whereSql}
+       ORDER BY ${adminSortSql(filters.sort)}
+       LIMIT ?`
+    )
+    .all(...params, limit) as Array<
+    FileRecordRow & { owner_name: string | null; owner_username: string | null }
+  >;
+
+  const shares = await Promise.all(
+    rows.map(async (row) => {
+      const filePath = path.join(uploadsDir, row.stored_name);
+      const exists = await stat(filePath)
+        .then((fileStat) => fileStat.isFile())
+        .catch(() => false);
+      const status: AdminShareStatus = !exists
+        ? "missing"
+        : row.expires_at <= now
+          ? "expired"
+          : "active";
+
+      return {
+        ...rowToFile(row),
+        ownerName: row.owner_name,
+        ownerUsername: row.owner_username,
+        status,
+      };
+    })
+  );
+
+  return filters.status === "missing"
+    ? shares.filter((share) => share.status === "missing")
+    : shares;
+}
+
+export async function deleteSharedFileByAdmin(token: string) {
+  const database = await getDb();
+  const row = database
+    .prepare("SELECT * FROM files WHERE token = ? LIMIT 1")
+    .get(token) as FileRecordRow | undefined;
+
+  if (!row) {
+    return false;
+  }
+
+  await deleteSharedFile(rowToFile(row));
+  return true;
 }
 
 export async function openSharedFile(sharedFile: SharedFile) {

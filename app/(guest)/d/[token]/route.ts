@@ -5,6 +5,7 @@ import {
   deleteSharedFile,
   getSharedFile,
   openSharedFile,
+  recordSharedFileDownload,
 } from "@/library/server/storage";
 
 export const runtime = "nodejs";
@@ -33,6 +34,7 @@ export async function GET(
 
   try {
     const { size, stream } = await openSharedFile(sharedFile);
+    await recordSharedFileDownload(sharedFile);
 
     return new Response(Readable.toWeb(stream) as ReadableStream, {
       headers: {
