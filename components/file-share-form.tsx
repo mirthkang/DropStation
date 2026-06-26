@@ -2,8 +2,8 @@
 
 import { format } from "date-fns";
 import { zhCN } from "date-fns/locale";
-import { CalendarIcon, Check, Copy, FileUp, Loader2, RefreshCw, UploadCloud } from "lucide-react";
-import * as React from "react";
+import { CalendarIcon, Check, Copy, FileUp, Loader2, RefreshCw, UploadCloud, } from "lucide-react";
+import QRCode from "qrcode";
 import { toast } from "sonner";
 
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import {
   SelectTrigger,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { useEffect, useMemo, useState } from 'react';
 
 const maxBytes = 1024 * 1024 * 1024;
 const maxExpiresMs = 30 * 24 * 60 * 60 * 1000;
@@ -128,22 +129,61 @@ async function writeClipboardText(text: string) {
 }
 
 export function FileShareForm() {
-  const [file, setFile] = React.useState<File | null>(null);
-  const [durationAmount, setDurationAmount] = React.useState("1");
-  const [durationUnit, setDurationUnit] = React.useState<DurationUnit>("day");
-  const [expiresAtDate, setExpiresAtDate] = React.useState<Date>(() =>
+
+  const [file, setFile] = useState<File | null>(null);
+  const [durationAmount, setDurationAmount] = useState("1");
+  const [durationUnit, setDurationUnit] = useState<DurationUnit>("day");
+  const [expiresAtDate, setExpiresAtDate] = useState<Date>(() =>
     durationToExpiresAt(1, "day")
   );
-  const [maxDate] = React.useState(() => new Date(Date.now() + maxExpiresMs));
-  const [isUploading, setIsUploading] = React.useState(false);
-  const [isRegenerating, setIsRegenerating] = React.useState(false);
-  const [result, setResult] = React.useState<UploadResult | null>(null);
+  const [maxDate] = useState(() => new Date(Date.now() + maxExpiresMs));
+  const [isUploading, setIsUploading] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [result, setResult] = useState<UploadResult | null>(null);
+  const [qrCode, setQrCode] = useState<{ sourceUrl: string; imageUrl: string; } | null>(null);
 
-  const today = React.useMemo(() => {
+  const today = useMemo(() => {
     const date = new Date();
     date.setHours(0, 0, 0, 0);
     return date;
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!result?.url) {
+      return;
+    }
+
+    QRCode.toDataURL(result.url, {
+      width: 512,
+      margin: 2,
+      color: {
+        dark: "#111827",
+        light: "#ffffff",
+      },
+    })
+      .then((url) => {
+        if (!cancelled) {
+          setQrCode({
+            sourceUrl: result.url,
+            imageUrl: url,
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setQrCode({
+            sourceUrl: result.url,
+            imageUrl: "",
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [result?.url]);
 
   function updateDuration(nextAmount: string, nextUnit: DurationUnit) {
     setDurationUnit(nextUnit);
@@ -278,7 +318,7 @@ export function FileShareForm() {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
       <form
         onSubmit={onSubmit}
         className="rounded-lg border bg-card p-5 shadow-sm"
@@ -432,12 +472,21 @@ export function FileShareForm() {
                 </div>
               </div>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="rounded-lg border bg-background p-2">
+              <div className="mx-auto flex aspect-square w-full max-w-40 items-center justify-center rounded-md bg-white">
+                {qrCode?.sourceUrl === result.url && qrCode.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={qrCode.imageUrl} alt="分享链接二维码" className="h-full w-full select-auto" />
+                ) : (
+                  <Loader2 className="size-5 animate-spin text-muted-foreground" />
+                )}
+              </div>
+            </div>
+            <div className={result.duplicate ? "grid grid-cols-3 gap-2" : "grid grid-cols-2 gap-2"}>
               {result.duplicate ? (
                 <Button
                   type="button"
                   variant="outline"
-                  className="flex-1"
                   onClick={regenerateUrl}
                   disabled={isRegenerating}
                 >
@@ -449,11 +498,11 @@ export function FileShareForm() {
                   重新生成
                 </Button>
               ) : null}
-              <Button type="button" variant="outline" className="flex-1" onClick={copyUrl}>
+              <Button type="button" variant="outline" onClick={copyUrl}>
                 <Copy className="size-4" />
                 复制
               </Button>
-              <a href={result.url} className={buttonVariants({ className: "flex-1" })}>
+              <a href={result.url} className={buttonVariants()}>
                 下载
               </a>
             </div>
