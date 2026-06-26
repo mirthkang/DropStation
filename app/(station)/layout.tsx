@@ -1,15 +1,25 @@
 import Link from "next/link";
 import Image from "next/image";
+import { redirect } from "next/navigation";
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { UserMenu } from "@/components/user-menu";
 import { Button } from "@/components/ui/button";
-import { getSession } from "@/library/session";
+import { deleteSession, getSession } from "@/library/session";
+import { isPublicRegistrationEnabled } from "@/library/server/settings";
 import { getUserById } from "@/library/server/users";
 
 export default async function StationLayout({ children }: React.PropsWithChildren) {
-  const session = await getSession();
+  const [session, registrationEnabled] = await Promise.all([
+    getSession(),
+    isPublicRegistrationEnabled(),
+  ]);
   const user = session?.userId ? await getUserById(session.userId) : null;
+
+  if (user?.isDisabled) {
+    await deleteSession();
+    redirect("/signin");
+  }
 
   return (
     <main className="min-h-full flex-1 bg-muted/40">
@@ -34,9 +44,11 @@ export default async function StationLayout({ children }: React.PropsWithChildre
                 <Button nativeButton={false} variant="outline" render={<Link href="/signin" />}>
                   登录
                 </Button>
-                <Button nativeButton={false} render={<Link href="/signup" />}>
-                  注册
-                </Button>
+                {registrationEnabled ? (
+                  <Button nativeButton={false} render={<Link href="/signup" />}>
+                    注册
+                  </Button>
+                ) : null}
               </div>
             )}
             <ThemeToggle />

@@ -13,7 +13,10 @@ import { toast } from 'sonner'
 import { useRouter } from 'next/navigation'
 import { ThemeToggle } from '../theme-toggle'
 
-export function SignupForm({ ...props }: React.ComponentProps<typeof Card>) {
+export function SignupForm({
+  registrationEnabled = true,
+  ...props
+}: React.ComponentProps<typeof Card> & { registrationEnabled?: boolean }) {
 
   const [state, action, pending] = useActionState(signupAction, undefined)
   const router = useRouter()
@@ -35,7 +38,9 @@ export function SignupForm({ ...props }: React.ComponentProps<typeof Card>) {
       <CardHeader>
         <CardTitle>创建账号</CardTitle>
         <CardDescription>
-          在下方输入你的信息以创建账号
+          {registrationEnabled
+            ? "在下方输入你的信息以创建账号"
+            : "公开注册已关闭，请联系管理员创建账号"}
         </CardDescription>
         <CardAction>
           <ThemeToggle />
@@ -46,33 +51,33 @@ export function SignupForm({ ...props }: React.ComponentProps<typeof Card>) {
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="name">姓名</FieldLabel>
-              <Input id="name" name='name' type="text" placeholder="张三" required
+              <Input id="name" name='name' type="text" placeholder="张三" required disabled={!registrationEnabled}
                 value={params.name} onChange={(e) => { setParams({ ...params, name: e.target.value }) }} />
               {state?.errors?.name && <FieldError>{state.errors.name.join(', ')}</FieldError>}
             </Field>
             <Field>
               <FieldLabel htmlFor="username">用户名</FieldLabel>
-              <Input id="username" name="username" type="text" placeholder="用户名" required
+              <Input id="username" name="username" type="text" placeholder="用户名" required disabled={!registrationEnabled}
                 value={params.username} onChange={(e) => { setParams({ ...params, username: e.target.value }) }} />
               {state?.errors?.username && <FieldError>{state.errors.username.join(', ')}</FieldError>}
             </Field>
             <Field>
               <FieldLabel htmlFor="password">密码</FieldLabel>
-              <Input id="password" name="password" type="password" required
+              <Input id="password" name="password" type="password" required disabled={!registrationEnabled}
                 value={params.password} onChange={(e) => { setParams({ ...params, password: e.target.value }) }} />
               {state?.errors?.password && <FieldError>{state.errors.password.join(', ')}</FieldError>}
               <FieldDescription>密码必须至少包含6个字符。</FieldDescription>
             </Field>
             <Field>
               <FieldLabel htmlFor="confirmPassword">确认密码</FieldLabel>
-              <Input id="confirmPassword" name="confirmPassword" type="password" required
+              <Input id="confirmPassword" name="confirmPassword" type="password" required disabled={!registrationEnabled}
                 value={params.confirmPassword} onChange={(e) => { setParams({ ...params, confirmPassword: e.target.value }) }} />
               {state?.errors?.confirmPassword && <FieldError>{state.errors.confirmPassword.join(', ')}</FieldError>}
               <FieldDescription>请确认您的密码。</FieldDescription>
             </Field>
             <FieldGroup>
               <Field>
-                <Button disabled={pending} type="submit">创建账号</Button>
+                <Button disabled={pending || !registrationEnabled} type="submit">创建账号</Button>
                 <Button nativeButton={false} variant="outline" render={<Link href="/" />}>
                   返回首页
                 </Button>

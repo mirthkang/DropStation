@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 
-import { getSession } from "@/library/session";
+import { deleteSession, getSession } from "@/library/session";
 import { getUserById } from "@/library/server/users";
 
 export async function requireAdminUser() {
@@ -12,7 +12,10 @@ export async function requireAdminUser() {
 
   const user = await getUserById(session.userId);
 
-  if (!user) {
+  if (!user || user.isDisabled) {
+    if (user?.isDisabled) {
+      await deleteSession();
+    }
     redirect("/signin");
   }
 
@@ -31,5 +34,5 @@ export async function isCurrentUserAdmin() {
   }
 
   const user = await getUserById(session.userId);
-  return Boolean(user?.isAdmin);
+  return Boolean(user?.isAdmin && !user.isDisabled);
 }

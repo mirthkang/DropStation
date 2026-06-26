@@ -146,7 +146,10 @@ export async function getDb() {
         username TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
         is_admin INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        avatar_path TEXT,
+        is_disabled INTEGER NOT NULL DEFAULT 0,
+        last_login_at INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_users_username
@@ -161,6 +164,12 @@ export async function getDb() {
 
       CREATE INDEX IF NOT EXISTS idx_download_events_downloaded_at
         ON download_events (downloaded_at);
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
 
     const fileColumns = db
@@ -181,6 +190,14 @@ export async function getDb() {
 
     if (!userColumns.some((column) => column.name === "avatar_path")) {
       db.exec("ALTER TABLE users ADD COLUMN avatar_path TEXT");
+    }
+
+    if (!userColumns.some((column) => column.name === "is_disabled")) {
+      db.exec("ALTER TABLE users ADD COLUMN is_disabled INTEGER NOT NULL DEFAULT 0");
+    }
+
+    if (!userColumns.some((column) => column.name === "last_login_at")) {
+      db.exec("ALTER TABLE users ADD COLUMN last_login_at INTEGER");
     }
   }
 
