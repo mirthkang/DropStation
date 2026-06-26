@@ -1,89 +1,37 @@
 "use client";
 
 import { format } from "date-fns";
-import { zhCN } from "date-fns/locale";
-import { CalendarIcon, Check, Copy, FileUp, Loader2, RefreshCw, UploadCloud, } from "lucide-react";
-import QRCode from "qrcode";
+import { Check, Copy, FileUp, Loader2, RefreshCw, UploadCloud, } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  type DurationUnit,
+  durationToExpiresAt,
+  ExpiresAtPicker,
+  maxAmountForUnit,
+  maxExpiresMs,
+  roundToMinute,
+} from "@/components/file-share/expires-at-picker";
+import { QrCodeImage } from "@/components/file-share/qr-code-image";
+import { UploadProgress } from "@/components/file-share/upload-progress";
+import {
+  type UploadResult,
+  type UploadStatus,
+  uploadWithProgress,
+} from "@/components/file-share/upload-xhr";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 const maxBytes = 1024 * 1024 * 1024;
-const maxExpiresMs = 30 * 24 * 60 * 60 * 1000;
-
-type UploadResult = {
-  url: string;
-  duplicate: boolean;
-  file: {
-    token: string;
-    name: string;
-    size: number;
-    expiresAt: number;
-    sha256: string;
-  };
-};
-
-type DurationUnit = "minute" | "hour" | "day" | "week" | "month";
-
-const durationUnits: Array<{ value: DurationUnit; label: string; ms: number }> = [
-  { value: "minute", label: "分钟", ms: 60 * 1000 },
-  { value: "hour", label: "小时", ms: 60 * 60 * 1000 },
-  { value: "day", label: "天", ms: 24 * 60 * 60 * 1000 },
-  { value: "week", label: "周", ms: 7 * 24 * 60 * 60 * 1000 },
-  { value: "month", label: "月", ms: 30 * 24 * 60 * 60 * 1000 },
-];
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function roundToMinute(date: Date) {
-  const next = new Date(date);
-  next.setSeconds(0, 0);
-
-  return next;
-}
-
-function durationToExpiresAt(amount: number, unit: DurationUnit) {
-  const unitConfig = durationUnits.find((item) => item.value === unit);
-  const expiresAt = roundToMinute(
-    new Date(Date.now() + Math.max(1, amount) * (unitConfig?.ms ?? durationUnits[2].ms))
-  );
-
-  if (expiresAt.getTime() <= Date.now()) {
-    expiresAt.setMinutes(expiresAt.getMinutes() + 1);
-  }
-
-  return expiresAt;
-}
-
-function durationUnitLabel(unit: DurationUnit) {
-  return durationUnits.find((item) => item.value === unit)?.label ?? "天";
-}
-
-function maxAmountForUnit(unit: DurationUnit) {
-  const unitConfig = durationUnits.find((item) => item.value === unit);
-
-  return Math.max(1, Math.floor(maxExpiresMs / (unitConfig?.ms ?? durationUnits[2].ms)));
 }
 
 async function writeClipboardText(text: string) {
@@ -140,50 +88,14 @@ export function FileShareForm() {
   const [isUploading, setIsUploading] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [result, setResult] = useState<UploadResult | null>(null);
-  const [qrCode, setQrCode] = useState<{ sourceUrl: string; imageUrl: string; } | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus | null>(null);
+  const uploadRequestRef = useRef<XMLHttpRequest | null>(null);
 
   const today = useMemo(() => {
     const date = new Date();
     date.setHours(0, 0, 0, 0);
     return date;
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!result?.url) {
-      return;
-    }
-
-    QRCode.toDataURL(result.url, {
-      width: 512,
-      margin: 2,
-      color: {
-        dark: "#111827",
-        light: "#ffffff",
-      },
-    })
-      .then((url) => {
-        if (!cancelled) {
-          setQrCode({
-            sourceUrl: result.url,
-            imageUrl: url,
-          });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setQrCode({
-            sourceUrl: result.url,
-            imageUrl: "",
-          });
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [result?.url]);
 
   function updateDuration(nextAmount: string, nextUnit: DurationUnit) {
     setDurationUnit(nextUnit);
@@ -270,6 +182,10 @@ export function FileShareForm() {
     }
   }
 
+  function cancelUpload() {
+    uploadRequestRef.current?.abort();
+  }
+
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -296,24 +212,28 @@ export function FileShareForm() {
 
     setIsUploading(true);
     setResult(null);
+    setUploadStatus({
+      phase: "uploading",
+      progress: 0,
+      loaded: 0,
+      total: file.size,
+      speedBytesPerSecond: 0,
+      remainingSeconds: null,
+    });
 
     try {
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload.error || "上传失败");
-      }
+      const upload = uploadWithProgress(formData, file.size, setUploadStatus);
+      uploadRequestRef.current = upload.xhr;
+      const payload = await upload.promise;
 
       setResult(payload);
       toast.success(payload.duplicate ? "已复用相同文件的链接" : "上传完成");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "上传失败");
     } finally {
+      uploadRequestRef.current = null;
       setIsUploading(false);
+      setUploadStatus(null);
     }
   }
 
@@ -367,82 +287,25 @@ export function FileShareForm() {
 
           <Separator />
 
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <CalendarIcon className="size-4 text-muted-foreground" />
-              <Label>过期时间</Label>
-            </div>
-            <div className="rounded-lg border bg-muted/40 p-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={maxAmountForUnit(durationUnit)}
-                    step={1}
-                    value={durationAmount}
-                    onChange={(event) =>
-                      updateDuration(event.target.value, durationUnit)
-                    }
-                    aria-label="过期时长"
-                    className="h-9 w-24 text-center"
-                  />
-                  <Select
-                    value={durationUnit}
-                    onValueChange={(value) =>
-                      updateDuration(durationAmount, value as DurationUnit)
-                    }
-                  >
-                    <SelectTrigger className="h-9 w-28">
-                      <span className="flex-1 text-left">
-                        {durationUnitLabel(durationUnit)}
-                      </span>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {durationUnits.map((unit) => (
-                        <SelectItem key={unit.value} value={unit.value}>
-                          {unit.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  快捷设置，到期自动失效
-                </div>
-              </div>
-            </div>
-
-            <Popover>
-              <PopoverTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-10 w-full justify-start font-normal"
-                  />
-                }
-              >
-                <CalendarIcon className="size-4 text-muted-foreground" />
-                {format(expiresAtDate, "yyyy年MM月dd日 HH:mm", { locale: zhCN })}
-              </PopoverTrigger>
-              <PopoverContent align="start" className="w-auto p-3">
-                <Calendar
-                  mode="single"
-                  selected={expiresAtDate}
-                  onSelect={updateDate}
-                  locale={zhCN}
-                  disabled={{ before: today, after: maxDate }}
-                />
-              </PopoverContent>
-            </Popover>
-          </div>
+          <ExpiresAtPicker
+            durationAmount={durationAmount}
+            durationUnit={durationUnit}
+            expiresAtDate={expiresAtDate}
+            today={today}
+            maxDate={maxDate}
+            onDurationChange={updateDuration}
+            onDateChange={updateDate}
+          />
         </div>
 
         <Button type="submit" size="lg" className="mt-6 w-full" disabled={isUploading}>
           {isUploading ? <Loader2 className="size-4 animate-spin" /> : <FileUp className="size-4" />}
           {isUploading ? "上传中" : "上传文件"}
         </Button>
+
+        {uploadStatus ? (
+          <UploadProgress status={uploadStatus} onCancel={cancelUpload} />
+        ) : null}
       </form>
 
       <aside className="rounded-lg border bg-card p-5 shadow-sm">
@@ -472,16 +335,7 @@ export function FileShareForm() {
                 </div>
               </div>
             </div>
-            <div className="rounded-lg border bg-background p-2">
-              <div className="mx-auto flex aspect-square w-full max-w-40 items-center justify-center rounded-md bg-white">
-                {qrCode?.sourceUrl === result.url && qrCode.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={qrCode.imageUrl} alt="分享链接二维码" className="h-full w-full select-auto" />
-                ) : (
-                  <Loader2 className="size-5 animate-spin text-muted-foreground" />
-                )}
-              </div>
-            </div>
+            <QrCodeImage url={result.url} />
             <div className={result.duplicate ? "grid grid-cols-3 gap-2" : "grid grid-cols-2 gap-2"}>
               {result.duplicate ? (
                 <Button
